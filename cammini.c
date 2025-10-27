@@ -49,18 +49,19 @@ typedef struct {
     Grafo* grafo;           // Puntatore al grafo
 } SharedBuffer;
 
-// Funzione di confronto per qsort (per codice attore)
-static int cmp_attore(const void* a, const void* b) {
-    const Attore* aa = (const Attore*)a;
-    const Attore* bb = (const Attore*)b;
-    return aa->codice - bb->codice;
-}
 
 // Funzione di confronto per bsearch
 static int cmp_code(const void* a, const void* b) {
     const int* code = (const int*)a;
     const Attore* attore = (const Attore*)b;
     return *code - attore->codice;
+}
+
+// Funzione di confronto per qsort
+static int cmp_attore(const void* a, const void* b) {
+    const Attore* att1 = (const Attore*)a;
+    const Attore* att2 = (const Attore*)b;
+    return att1->codice - att2->codice;
 }
 
 // Trova un attore dato il codice usando bsearch
@@ -471,6 +472,7 @@ static void* worker(void* arg) {
 }
 
 int main(int argc, char** argv) {
+
     if (argc < 4) {
         fprintf(stderr, "Uso: %s <nomi.tsv> <grafo.tsv> <numconsumatori>\n", argv[0]);
         return 1;
@@ -501,7 +503,7 @@ int main(int argc, char** argv) {
     // 2. Costruisce il grafo usando schema produttori/consumatori
     SharedBuffer* sb = buffer_init(100, grafo); // Buffer di 100 elementi
     if (!sb) {
-        fprintf(stderr, "Errore: impossibile creare buffer condiviso\n");
+        perror("buffer_init");
         grafo_free(grafo);
         return 1;
     }
@@ -509,7 +511,7 @@ int main(int argc, char** argv) {
     // Avvia i thread consumatori
     pthread_t* consumers = malloc(sizeof(pthread_t) * numConsumatori);
     if (!consumers) {
-        fprintf(stderr, "Errore: impossibile allocare array consumatori\n");
+        perror("malloc consumers");
         buffer_destroy(sb);
         grafo_free(grafo);
         return 1;
