@@ -69,6 +69,23 @@ void abr_free(ABR* tree){
     free(tree); 
 }
 
+// Restituisce il numero di nodi nell'ABR
+size_t abr_size_rec(Node* n){
+    if(!n) return 0;
+    return 1 + abr_size_rec(n->l) + abr_size_rec(n->r);
+}
+
+// Restituisce il numero di nodi nell'ABR
+size_t abr_size(ABR* tree){
+    if(!tree) return 0;
+    return abr_size_rec(tree->root);
+}
+
+// Verifica se la chiave k è presente nell'ABR
+int abr_member(ABR* tree, uint32_t k){
+    return abr_find(tree, k) != NULL;
+}
+
 // Simple reversible mix: rotate-left 7, xor golden ratio constant
 int shuffle(int n){
     return ((((n & 0x3F) << 26) | ((n >> 6) & 0x3FFFFFF)) ^ 0x55555555);

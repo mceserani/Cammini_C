@@ -147,39 +147,55 @@ static Grafo* load_nomi(const char* path) {
 }
 
 // Processa una linea del file grafo.tsv e aggiorna il grafo
+// Formato: codice\tnumcop\tcop1\tcop2\t...\tcopN
 static void process_grafo_line(Grafo* g, char* line) {
     char* saveptr;
-    char* tok1 = strtok_r(line, "\t", &saveptr);
-    char* tok2 = strtok_r(NULL, "\t\n", &saveptr);
-
-    if (!tok1 || !tok2) return;
-
-    int code1 = atoi(tok1);
-    int code2 = atoi(tok2);
-
-    // Trova gli attori usando bsearch
-    Attore* att1 = find_attore(g, code1);
-    Attore* att2 = find_attore(g, code2);
-
-    if (!att1 || !att2) return;
-
-    // Aggiunge l'arco (bidirezionale)
+    
+    // Primo campo: codice attore
+    char* tok_code = strtok_r(line, "\t", &saveptr);
+    if (!tok_code) return;
+    
+    // Secondo campo: numero di collaborazioni
+    char* tok_numcop = strtok_r(NULL, "\t", &saveptr);
+    if (!tok_numcop) return;
+    
+    int codice = atoi(tok_code);
+    int numcop = atoi(tok_numcop);
+    
+    if (numcop <= 0) return;
+    
+    // Trova l'attore usando bsearch
+    Attore* att = find_attore(g, codice);
+    if (!att) return;
+    
+    // Alloca l'array per i coprotagonisti
+    int* cop_array = malloc(sizeof(int) * numcop);
+    if (!cop_array) {
+        perror("malloc cop_array");
+        return;
+    }
+    
+    // Leggi tutti i codici dei coprotagonisti
+    int count = 0;
+    for (int i = 0; i < numcop; i++) {
+        char* tok_cop = strtok_r(NULL, "\t\n", &saveptr);
+        if (!tok_cop) break;
+        
+        cop_array[count] = atoi(tok_cop);
+        count++;
+    }
+    
+    // Aggiorna l'attore (protetto da mutex per accesso concorrente)
     pthread_mutex_lock(g->mutex);
-
-    // Aggiungi code2 ai coprotagonisti di att1
-    att1->cop = realloc(att1->cop, sizeof(int) * (att1->numcop + 1));
-    if (att1->cop) {
-        att1->cop[att1->numcop] = code2;
-        att1->numcop++;
+    
+    // Se l'attore aveva già coprotagonisti, libera l'array precedente
+    if (att->cop) {
+        free(att->cop);
     }
-
-    // Aggiungi code1 ai coprotagonisti di att2
-    att2->cop = realloc(att2->cop, sizeof(int) * (att2->numcop + 1));
-    if (att2->cop) {
-        att2->cop[att2->numcop] = code1;
-        att2->numcop++;
-    }
-
+    
+    att->cop = cop_array;
+    att->numcop = count;
+    
     pthread_mutex_unlock(g->mutex);
 }
 
@@ -373,68 +389,116 @@ static void* worker(void* arg) {
         return NULL;
     }
     
-        // BFS
-        Q* queue = q_new(0);
-        ABR* visited = abr_new();
+    // BFS
+    Q* queue = q_new(0);
+    ABR* visited = abr_new();
+    
+    q_push(queue, t->a);
+    abr_put(visited, t->a, t->a); // Il nodo iniziale è il suo stesso genitore
+    
+    int found = 0;
+    
+    while (!q_empty(queue)) {
+        int current;
+        q_pop(queue, &current);
         
-        q_push(queue, t->a);
-        abr_insert(visited, t->a);
+        if (current == t->b) {
+            found = 1;
+            break;
+        }
         
-        int found = 0;
+        // Trova l'attore corrente
+        Attore* curr_attore = find_attore(t->grafo, current);
+        if (!curr_attore) continue;
         
-        while (!q_empty(queue)) {
-            int current;
-            q_pop(queue, &current);
+        // Esplora i vicini
+        for (int i = 0; i < curr_attore->numcop; i++) {
+            int neighbor = curr_attore->cop[i];
             
-            if (current == t->b) {
-                found = 1;
+            if (!abr_member(visited, neighbor)) {
+                abr_put(visited, neighbor, current); // Registra il genitore
+                q_push(queue, neighbor);
+            }
+        }
+    }
+    
+    if (!found) {
+        if (out) {
+            fprintf(out, "non esistono cammini da %d a %d\n", t->a, t->b);
+            fclose(out);
+        }
+        printf("%d.%d: Nessun cammino. Tempo di elaborazione %.2f secondi\n",
+               t->a, t->b, now_sec() - start_time);
+    } else {
+        // Ricostruisci il percorso da t->b a t->a usando i genitori
+        int* path = NULL;
+        int path_len = 0;
+
+        // Conta la lunghezza del percorso
+        int current = t->b;
+        int count = 1; // Include il nodo finale
+        
+        while (current != t->a) {
+            Node* node = abr_find(visited, current);  // ✅ Usa abr_find
+            if (!node) {
+                // Errore: non dovrebbe succedere
+                fprintf(stderr, "Errore: nodo %d non trovato in visited\n", current);
                 break;
             }
+            current = node->pred;  // ✅ Accedi al campo pred
+            count++;
+        }
+        
+        // Alloca l'array del percorso
+        path = malloc(sizeof(int) * count);
+        if (!path) {
+            perror("malloc path");
+            if (out) fclose(out);
+            q_free(queue);
+            abr_free(visited);
+            sem_post(t->slots);
+            free(t);
+            return NULL;
+        }
+        
+        // Ricostruisci il percorso al contrario
+        current = t->b;
+        for (int i = count - 1; i >= 0; i--) {
+            path[i] = current;
+            if (current == t->a) break;
             
-            // Trova l'attore corrente
-            Attore* curr_attore = find_attore(t->grafo, current);
-            if (!curr_attore) continue;
-            
-            // Esplora i vicini
-            for (int i = 0; i < curr_attore->numcop; i++) {
-                int neighbor = curr_attore->cop[i];
-                
-                if (!abr_member(visited, neighbor)) {
-                    abr_insert(visited, neighbor);
-                    q_push(queue, neighbor);
+            Node* node = abr_find(visited, current);  // ✅ Usa abr_find
+            if (node) {
+                current = node->pred;  // ✅ Accedi al campo pred
+            }
+        }
+        
+        path_len = count;
+        
+        // Scrivi il percorso nel file
+        if (out) {
+            for (int i = 0; i < path_len; i++) {
+                Attore* att = find_attore(t->grafo, path[i]);
+                if (att) {
+                    fprintf(out, "%d\t%s\t%d\n", att->codice, att->nome, att->anno);
                 }
             }
+            fclose(out);
         }
         
-        if (!found) {
-            if (out) {
-                fprintf(out, "non esistono cammini da %d a %d\n", t->a, t->b);
-                fclose(out);
-            }
-            printf("%d.%d: Nessun cammino. Tempo di elaborazione %.2f secondi\n",
-                   t->a, t->b, now_sec() - start_time);
-        } else {
-            // Ricostruisci il percorso (serve una struttura dati aggiuntiva)
-            // TODO: Implementare ricostruzione del percorso
-            
-            if (out) {
-                // Scrivi il percorso nel file
-                // TODO: Implementare scrittura del percorso
-                fclose(out);
-            }
-            
-            // TODO: Calcola lunghezza del percorso
-            printf("%d.%d: Lunghezza minima X. Tempo di elaborazione %.2f secondi\n",
-                   t->a, t->b, now_sec() - start_time);
-        }
+        printf("%d.%d: Lunghezza minima %d. Tempo di elaborazione %.2f secondi\n",
+               t->a, t->b, path_len - 1, now_sec() - start_time);
         
-        q_free(queue);
-        abr_free(visited);
-        
-        sem_post(t->slots);
-        free(t);
-        return NULL;
+        free(path);
     }
+    
+    q_free(queue);
+    abr_free(visited);
+    
+    sem_post(t->slots);
+    free(t);
+    return NULL;
+}
     
     static void* signal_handler_thread(void* arg) {
         (void)arg;
@@ -603,6 +667,9 @@ int main(int argc, char** argv) {
     pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
 
     double last = now_sec();
+    int pipe_closed = 0;           // Flag per indicare che la pipe è stata chiusa
+    double pipe_close_time = 0.0;  // Momento in cui la pipe è stata chiusa
+
     while(1){
         // Controlla se è arrivato SIGINT
         if(sigint_received){
@@ -623,8 +690,13 @@ int main(int argc, char** argv) {
                         t->b=(int)b; 
                         t->slots=&slots;
                         t->grafo = grafo;
-                        pthread_t th; int rc = pthread_create(&th, &attr, worker, t);
-                        if(rc!=0){ perror("pthread_create"); sem_post(&slots); free(t); }
+                        pthread_t th; 
+                        int rc = pthread_create(&th, &attr, worker, t);
+                        if(rc!=0){ 
+                            perror("pthread_create"); 
+                            sem_post(&slots); 
+                            free(t); 
+                        }
                     }
                 } else {
                     free(line);
@@ -633,19 +705,46 @@ int main(int argc, char** argv) {
             break;
         }
         
-        char* line = NULL; size_t cap = 0; ssize_t n = getline(&line, &cap, fp);
+        char* line = NULL; 
+        size_t cap = 0; 
+        ssize_t n = getline(&line, &cap, fp);
+        
         if(n==-1){ 
-            free(line); 
-            if(now_sec() - last >= 20.0) break;
+            free(line);
+            
+            // Prima volta che la pipe viene chiusa
+            if(!pipe_closed){
+                pipe_closed = 1;
+                pipe_close_time = now_sec();
+                printf("Pipe chiusa, attendo 20 secondi...\n");
+                fflush(stdout);
+            }
+            
+            // Controlla se sono passati 20 secondi dalla chiusura della pipe
+            if(now_sec() - pipe_close_time >= 20.0){
+                break;
+            }
+            
+            // Aspetta un po' prima di riprovare (evita busy waiting)
+            struct timespec ts = {0, 100000000}; // 100ms
+            nanosleep(&ts, NULL);
             continue; 
         }
+        
+        // Pipe attiva, resetta il flag
+        pipe_closed = 0;
         last = now_sec();
+        
         // parse "a b"
-        char* p = line; char* end; errno=0; long a = strtol(p,&end,10);
-        while(*end==' '||*end=='\t') end++;
+        char* p = line; 
+        char* end; 
+        errno=0; 
+        long a = strtol(p,&end,10);
+        while(*end==' '|| *end=='\t') end++;
         long b = strtol(end,&p,10);
         free(line);
         if(errno!=0){ continue; }
+        
         // limit concurrency
         sem_wait(&slots);
         Task* t = (Task*)malloc(sizeof(Task)); 
@@ -653,8 +752,13 @@ int main(int argc, char** argv) {
         t->b=(int)b; 
         t->slots=&slots;
         t->grafo = grafo;
-        pthread_t th; int rc = pthread_create(&th, &attr, worker, t);
-        if(rc!=0){ perror("pthread_create"); sem_post(&slots); free(t); }
+        pthread_t th; 
+        int rc = pthread_create(&th, &attr, worker, t);
+        if(rc!=0){ 
+            perror("pthread_create"); 
+            sem_post(&slots); 
+            free(t); 
+        }
     }
 
     pthread_attr_destroy(&attr);
