@@ -3,7 +3,7 @@
 
 // ================= Albero di ricerca binaria =================
 
-typedef struct Node {
+struct Node {
     // Chiave
     uint32_t k;
     // Predecessore nel cammino 
