@@ -64,9 +64,16 @@ Node* abr_find(ABR* tree, uint32_t k){
 
 // Rilascia la memoria occupata dall'ABR
 void abr_free(ABR* tree){ 
-    if(!tree) return; 
-    abr_free(tree->root); 
-    free(tree); 
+    if(!tree) return;
+    // Funzione ricorsiva di deallocazione
+    void free_rec(Node* n){
+        if(!n) return;
+        free_rec(n->l);
+        free_rec(n->r);
+        free(n);
+    }
+    free_rec(tree->root);
+    free(tree);
 }
 
 // Restituisce il numero di nodi nell'ABR
